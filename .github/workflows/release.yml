@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  tagpr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+    outputs:
+      tag: ${{ steps.tagpr.outputs.tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - id: tagpr
+        uses: Songmu/tagpr@da82ed6743aec90049892070edd5561335904a9e # v1.17.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    needs: tagpr
+    if: needs.tagpr.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+
+      - name: Build firmware
+        run: |
+          export PICO_SDK_PATH="${GITHUB_WORKSPACE}/pico-sdk"
+          for BOARD in pico pico2; do
+            cmake -B "build/${BOARD}" -DPICO_BOARD="${BOARD}"
+            cmake --build "build/${BOARD}" -j$(nproc)
+          done
+
+      - name: Create archives
+        run: |
+          TAG="${{ needs.tagpr.outputs.tag }}"
+          for BOARD in pico pico2; do
+            ARCHIVE_NAME="push_to_talk_pico_${TAG}_${BOARD}"
+            mkdir "${ARCHIVE_NAME}"
+            cp "build/${BOARD}/push_to_talk_pico.uf2" "${ARCHIVE_NAME}/"
+            tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+          done
+          shasum -a 256 *.tar.gz > checksums.txt
+
+      - name: Upload to GitHub Release
+        run: gh release upload "${{ needs.tagpr.outputs.tag }}" *.tar.gz checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish GitHub Release
+        run: gh release edit "${{ needs.tagpr.outputs.tag }}" --draft=false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
